@@ -37,7 +37,7 @@ pub fn uwu_name(os_name: &mut String) {
         "windows" => "WinyandOwOws",
         _ => "unknown",
     };
-    
+
     *os_name = uwufied.to_string();
 }
 
@@ -80,7 +80,7 @@ pub fn uwu_kernel(kernel: &mut String) {
         ("ios", "iOwOS"),
         ("windows", "WinyandOwOws"),
     ];
-    
+
     for (from, to) in &replacements {
         if kernel.contains(from) {
             *kernel = kernel.replace(from, to);
@@ -149,7 +149,7 @@ pub fn uwu_hw(hw: &mut String) {
         ("aura", "Uwura"),
         ("Aura", "Uwura"),
     ];
-    
+
     for (from, to) in &replacements {
         *hw = hw.replace(from, to);
     }
@@ -164,8 +164,9 @@ pub fn uwu_pkgman(pkgman: &mut String) {
         ("pacman", "pacnyan"),
         ("port", "powt"),
         ("snap", "snyap"),
+        ("scoop", "scowoop"),
     ];
-    
+
     for (from, to) in &replacements {
         *pkgman = pkgman.replace(from, to);
     }
@@ -180,3 +181,4 @@ pub fn uwufy_all(info: &mut crate::info::SystemInfo) {
     }
     uwu_pkgman(&mut info.pkgman_name);
 }
+

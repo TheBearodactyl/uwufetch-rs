@@ -1,7 +1,7 @@
+use crate::info::SystemInfo;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use crate::info::SystemInfo;
 
 #[derive(Debug, Clone)]
 pub struct Configuration {
@@ -45,63 +45,61 @@ impl Default for Configuration {
 impl Configuration {
     pub fn parse_config(user_info: &mut SystemInfo) -> Self {
         let mut config = Configuration::default();
-        
+
         let config_path = Self::find_config_file();
         if let Some(path) = config_path {
             if let Ok(file) = File::open(path) {
                 let reader = BufReader::new(file);
-                
-                for line in reader.lines() {
-                    if let Ok(line) = line {
-                        let line = line.trim();
-                        if line.is_empty() || line.starts_with('#') {
-                            continue;
-                        }
-                        
-                        if let Some((key, value)) = line.split_once('=') {
-                            let key = key.trim();
-                            let value = value.trim().trim_matches('"');
-                            
-                            match key {
-                                "distro" => user_info.os_name = value.to_string(),
-                                "image" => {
-                                    let mut image_path = value.to_string();
-                                    if image_path.starts_with('~') {
-                                        if let Ok(home) = std::env::var("HOME") {
-                                            image_path = image_path.replacen('~', &home, 1);
-                                        }
-                                    }
-                                    user_info.image_name = Some(image_path);
-                                    config.show_image = true;
-                                }
-                                "user" => config.show_user = value == "true",
-                                "os" => config.show_os = value != "false",
-                                "host" => config.show_host = value != "false",
-                                "kernel" => config.show_kernel = value != "false",
-                                "cpu" => config.show_cpu = value != "false",
-                                "gpu" => {
-                                    if let Ok(idx) = value.parse::<usize>() {
-                                        config.gpu_indexes.push(idx);
+
+                for line in reader.lines().map_while(Result::ok) {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+
+                    if let Some((key, value)) = line.split_once('=') {
+                        let key = key.trim();
+                        let value = value.trim().trim_matches('"');
+
+                        match key {
+                            "distro" => user_info.os_name = value.to_string(),
+                            "image" => {
+                                let mut image_path = value.to_string();
+                                if image_path.starts_with('~') {
+                                    if let Ok(home) = std::env::var("HOME") {
+                                        image_path = image_path.replacen('~', &home, 1);
                                     }
                                 }
-                                "gpus" => config.show_gpu = value != "false",
-                                "ram" => config.show_ram = value != "false",
-                                "resolution" => config.show_resolution = value != "false",
-                                "shell" => config.show_shell = value != "false",
-                                "pkgs" => config.show_pkgs = value != "false",
-                                "uptime" => config.show_uptime = value != "false",
-                                "colors" => config.show_colors = value != "false",
-                                _ => {}
+                                user_info.image_name = Some(image_path);
+                                config.show_image = true;
                             }
+                            "user" => config.show_user = value == "true",
+                            "os" => config.show_os = value != "false",
+                            "host" => config.show_host = value != "false",
+                            "kernel" => config.show_kernel = value != "false",
+                            "cpu" => config.show_cpu = value != "false",
+                            "gpu" => {
+                                if let Ok(idx) = value.parse::<usize>() {
+                                    config.gpu_indexes.push(idx);
+                                }
+                            }
+                            "gpus" => config.show_gpu = value != "false",
+                            "ram" => config.show_ram = value != "false",
+                            "resolution" => config.show_resolution = value != "false",
+                            "shell" => config.show_shell = value != "false",
+                            "pkgs" => config.show_pkgs = value != "false",
+                            "uptime" => config.show_uptime = value != "false",
+                            "colors" => config.show_colors = value != "false",
+                            _ => {}
                         }
                     }
                 }
             }
         }
-        
+
         config
     }
-    
+
     fn find_config_file() -> Option<PathBuf> {
         if let Ok(home) = std::env::var("HOME") {
             let user_config = PathBuf::from(home).join(".config/uwufetch/config");
@@ -109,19 +107,20 @@ impl Configuration {
                 return Some(user_config);
             }
         }
-        
+
         if let Ok(prefix) = std::env::var("PREFIX") {
             let prefixed_config = PathBuf::from(prefix).join("etc/uwufetch/config");
             if prefixed_config.exists() {
                 return Some(prefixed_config);
             }
         }
-        
+
         let system_config = PathBuf::from("/etc/uwufetch/config");
         if system_config.exists() {
             return Some(system_config);
         }
-        
+
         None
     }
 }
+
