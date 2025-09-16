@@ -6,6 +6,7 @@ use std::thread;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct SystemInfo {
     pub user: String,
     pub host: String,
@@ -25,33 +26,9 @@ pub struct SystemInfo {
     pub image_name: Option<String>,
 }
 
-impl Default for SystemInfo {
-    fn default() -> Self {
-        SystemInfo {
-            user: String::new(),
-            host: String::new(),
-            os_name: String::new(),
-            kernel: String::new(),
-            model: String::new(),
-            cpu_model: String::new(),
-            gpu_models: Vec::new(),
-            ram_total: 0,
-            ram_used: 0,
-            screen_width: 0,
-            screen_height: 0,
-            shell: String::new(),
-            pkgs: 0,
-            pkgman_name: String::new(),
-            uptime: 0,
-            image_name: None,
-        }
-    }
-}
 
 impl SystemInfo {
-    // Compute only what we will show, and do heavy probes concurrently.
     pub fn populate(&mut self, config: &Configuration) {
-        // Minimal, targeted sysinfo refresh: CPU + memory only.
         let mut sys = System::new_with_specifics(
             RefreshKind::default()
                 .with_cpu(CpuRefreshKind::everything())
@@ -71,7 +48,6 @@ impl SystemInfo {
         self.get_shell();
         self.get_uptime(&sys);
 
-        // Heavy-ish bits: run only if needed, concurrently.
         let gpu_handle = if config.show_gpu {
             Some(thread::spawn(detect_gpus))
         } else {
@@ -112,7 +88,6 @@ impl SystemInfo {
             self.user = user;
         }
 
-        // Fast path on Linux, then fallbacks.
         #[cfg(target_os = "linux")]
         {
             if let Ok(hostname) = fs::read_to_string("/proc/sys/kernel/hostname") {
@@ -171,7 +146,6 @@ impl SystemInfo {
     fn get_kernel_fast(&mut self) {
         #[cfg(unix)]
         {
-            // On Linux, /proc path is faster than spawning uname.
             #[cfg(target_os = "linux")]
             {
                 if let Ok(r) = fs::read_to_string("/proc/sys/kernel/osrelease") {
@@ -254,7 +228,6 @@ impl SystemInfo {
     }
 
     fn get_resolution(&mut self) {
-        // unused: resolution collected in detect_resolution when needed
         let _ = ();
     }
 
@@ -271,14 +244,9 @@ impl SystemInfo {
     }
 }
 
-// ---------------------------
-// Concurrent probe functions
-// ---------------------------
-
 fn detect_gpus() -> Vec<String> {
     #[cfg(target_os = "linux")]
     {
-        // Prefer lspci if available for human-friendly names.
         if which("lspci") {
             if let Ok(out) = Command::new("lspci").args(["-mm", "-nn"]).output() {
                 let mut gpus = Vec::<String>::new();
@@ -288,10 +256,7 @@ fn detect_gpus() -> Vec<String> {
                         || line.contains("3D controller")
                         || line.contains("Display controller")
                     {
-                        // Try to extract a reasonable device name from quoted
-                        // fields: ... "VGA compatible controller" "Vendor" "Device" ...
                         let parts: Vec<&str> = line.split('"').collect();
-                        // Prefer "Vendor Device"; fallback to raw line tail.
                         if parts.len() >= 10 {
                             let vendor = parts.get(5).unwrap_or(&"").trim();
                             let device = parts.get(7).unwrap_or(&"").trim();
@@ -308,7 +273,6 @@ fn detect_gpus() -> Vec<String> {
             }
         }
 
-        // Fallback to DRM sysfs (driver names), if no lspci.
         let mut gpus = Vec::<String>::new();
         if let Ok(entries) = read_dir("/sys/class/drm") {
             for entry in entries.flatten() {
@@ -390,7 +354,6 @@ fn detect_resolution() -> (u32, u32) {
                 let s = String::from_utf8_lossy(&out.stdout);
                 for line in s.lines() {
                     if let Some(idx) = line.find("current") {
-                        // "current {w} x {h},"
                         let tail = &line[idx + "current".len()..];
                         let mut it = tail.split_whitespace();
                         let w = it.next().and_then(|t| t.parse::<u32>().ok());
@@ -440,7 +403,6 @@ fn detect_packages_fast() -> (u32, String) {
 
     #[cfg(target_os = "linux")]
     {
-        // Debian/Ubuntu: /var/lib/dpkg/status is fast and local.
         if Path::new("/var/lib/dpkg/status").exists() {
             if let Ok(s) = fs::read_to_string("/var/lib/dpkg/status") {
                 let count = s
@@ -454,7 +416,6 @@ fn detect_packages_fast() -> (u32, String) {
             }
         }
 
-        // Arch (pacman): count package dirs in local DB.
         if Path::new("/var/lib/pacman/local").exists() {
             let mut count = 0u32;
             if let Ok(rd) = read_dir("/var/lib/pacman/local") {
@@ -471,7 +432,6 @@ fn detect_packages_fast() -> (u32, String) {
             }
         }
 
-        // RPM-based: rpm -qa is fast compared to dnf.
         if which("rpm") {
             if let Ok(out) = Command::new("rpm")
                 .args(["-qa", "--qf", "%{NAME}\n"])
@@ -488,7 +448,6 @@ fn detect_packages_fast() -> (u32, String) {
             }
         }
 
-        // Flatpak (optional).
         if which("flatpak") {
             if let Ok(out) = Command::new("flatpak")
                 .args(["list", "--app", "--columns=application"])
@@ -505,7 +464,6 @@ fn detect_packages_fast() -> (u32, String) {
             }
         }
 
-        // Snap (optional).
         if which("snap") {
             if let Ok(out) = Command::new("snap").args(["list"]).output() {
                 let count = String::from_utf8_lossy(&out.stdout)
@@ -523,7 +481,6 @@ fn detect_packages_fast() -> (u32, String) {
 
     #[cfg(target_os = "macos")]
     {
-        // Homebrew: count formulae and casks by directories.
         let mut count = 0u32;
         for base in ["/opt/homebrew/Cellar", "/usr/local/Cellar"] {
             if Path::new(base).exists() {
@@ -561,7 +518,6 @@ fn detect_packages_fast() -> (u32, String) {
 
     #[cfg(target_os = "windows")]
     {
-        // Scoop (filesystem count).
         if let Ok(home) = std::env::var("USERPROFILE") {
             let p = format!(r"{}\scoop\apps", home);
             if Path::new(&p).exists() {
@@ -586,7 +542,6 @@ fn which(cmd: &str) -> bool {
     use std::env;
     use std::path::PathBuf;
 
-    // If cmd contains a path separator, check directly.
     if cmd.contains(std::path::MAIN_SEPARATOR) {
         return Path::new(cmd).is_file();
     }

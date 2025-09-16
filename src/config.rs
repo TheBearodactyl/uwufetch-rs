@@ -42,8 +42,6 @@ impl Default for Configuration {
 }
 
 impl Configuration {
-    // Parse config file without probing the system.
-    // Returns (config, distro_override, image_override)
     pub fn parse_config() -> (Self, Option<String>, Option<String>) {
         let mut config = Configuration::default();
         let mut distro_override: Option<String> = None;
