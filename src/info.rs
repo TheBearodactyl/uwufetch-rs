@@ -398,54 +398,16 @@ fn detect_resolution() -> (u32, u32) {
 
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = Command::new("wmic")
-            .args([
-                "desktopmonitor",
-                "get",
-                "screenheight,screenwidth",
-                "/format:csv",
-            ])
-            .output()
-        {
-            let output = String::from_utf8_lossy(&output.stdout);
-            for line in output.lines() {
-                if line.contains(',') && !line.starts_with("Node,") {
-                    let parts: Vec<&str> = line.split(',').collect();
-                    if parts.len() >= 3 {
-                        if let (Ok(h), Ok(w)) = (
-                            parts[1].trim().parse::<u32>(),
-                            parts[2].trim().parse::<u32>(),
-                        ) {
-                            if w > 0 && h > 0 {
-                                return (w, h);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
+            };
 
-        if let Ok(output) = Command::new("powershell")
-            .args(["-Command", "Get-WmiObject -Class Win32_VideoController | Select-Object CurrentHorizontalResolution, CurrentVerticalResolution | Format-List"])
-            .output()
-        {
-            let output = String::from_utf8_lossy(&output.stdout);
-            let mut width = None;
-            let mut height = None;
+            let width = GetSystemMetrics(SM_CXSCREEN);
+            let height = GetSystemMetrics(SM_CYSCREEN);
 
-            for line in output.lines() {
-                let line = line.trim();
-                if let Some(rest) = line.strip_prefix("CurrentHorizontalResolution : ") {
-                    width = rest.parse::<u32>().ok();
-                } else if let Some(rest) = line.strip_prefix("CurrentVerticalResolution : ") {
-                    height = rest.parse::<u32>().ok();
-                }
-
-                if let (Some(w), Some(h)) = (width, height) {
-                    if w > 0 && h > 0 {
-                        return (w, h);
-                    }
-                }
+            if width > 0 && height > 0 {
+                return (width as u32, height as u32);
             }
         }
 
