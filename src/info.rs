@@ -1,3 +1,5 @@
+#![allow(unreachable_code)]
+
 use crate::config::Configuration;
 use std::fs::{self, read_dir};
 use std::path::Path;
@@ -5,8 +7,7 @@ use std::process::Command;
 use std::thread;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SystemInfo {
     pub user: String,
     pub host: String,
@@ -26,7 +27,6 @@ pub struct SystemInfo {
     pub image_name: Option<String>,
 }
 
-
 impl SystemInfo {
     pub fn populate(&mut self, config: &Configuration) {
         let mut sys = System::new_with_specifics(
@@ -42,6 +42,7 @@ impl SystemInfo {
             self.get_os_info();
         }
         self.get_kernel_fast();
+        self.get_resolution();
         self.get_model();
         self.get_cpu(&sys);
         self.get_memory(&sys);
@@ -131,14 +132,14 @@ impl SystemInfo {
         #[cfg(target_os = "macos")]
         return "macos".to_string();
 
-        #[cfg(target_os = "windows")]
-        return "windows".to_string();
-
         #[cfg(target_os = "freebsd")]
         return "freebsd".to_string();
 
         #[cfg(target_os = "openbsd")]
         return "openbsd".to_string();
+
+        #[cfg(target_os = "windows")]
+        return "windows".to_string();
 
         "unknown".to_string()
     }
@@ -228,7 +229,8 @@ impl SystemInfo {
     }
 
     fn get_resolution(&mut self) {
-        let _ = ();
+        self.screen_width = detect_resolution().0;
+        self.screen_height = detect_resolution().1;
     }
 
     fn get_shell(&mut self) {
@@ -394,6 +396,62 @@ fn detect_resolution() -> (u32, u32) {
         return (0u32, 0u32);
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(output) = Command::new("wmic")
+            .args([
+                "desktopmonitor",
+                "get",
+                "screenheight,screenwidth",
+                "/format:csv",
+            ])
+            .output()
+        {
+            let output = String::from_utf8_lossy(&output.stdout);
+            for line in output.lines() {
+                if line.contains(',') && !line.starts_with("Node,") {
+                    let parts: Vec<&str> = line.split(',').collect();
+                    if parts.len() >= 3 {
+                        if let (Ok(h), Ok(w)) = (
+                            parts[1].trim().parse::<u32>(),
+                            parts[2].trim().parse::<u32>(),
+                        ) {
+                            if w > 0 && h > 0 {
+                                return (w, h);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Ok(output) = Command::new("powershell")
+            .args(["-Command", "Get-WmiObject -Class Win32_VideoController | Select-Object CurrentHorizontalResolution, CurrentVerticalResolution | Format-List"])
+            .output()
+        {
+            let output = String::from_utf8_lossy(&output.stdout);
+            let mut width = None;
+            let mut height = None;
+
+            for line in output.lines() {
+                let line = line.trim();
+                if let Some(rest) = line.strip_prefix("CurrentHorizontalResolution : ") {
+                    width = rest.parse::<u32>().ok();
+                } else if let Some(rest) = line.strip_prefix("CurrentVerticalResolution : ") {
+                    height = rest.parse::<u32>().ok();
+                }
+
+                if let (Some(w), Some(h)) = (width, height) {
+                    if w > 0 && h > 0 {
+                        return (w, h);
+                    }
+                }
+            }
+        }
+
+        return (0u32, 0u32);
+    }
+
     (0u32, 0u32)
 }
 
@@ -536,62 +594,4 @@ fn detect_packages_fast() -> (u32, String) {
         return (0u32, String::new());
     }
     (total, labels.join(", "))
-}
-
-fn which(cmd: &str) -> bool {
-    use std::env;
-    use std::path::PathBuf;
-
-    if cmd.contains(std::path::MAIN_SEPARATOR) {
-        return Path::new(cmd).is_file();
-    }
-
-    let path_var = match env::var("PATH") {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-
-    #[cfg(windows)]
-    let exts: Vec<String> = env::var("PATHEXT")
-        .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".to_string())
-        .split(';')
-        .map(|s| s.to_string())
-        .collect();
-
-    for dir in path_var.split(if cfg!(windows) { ';' } else { ':' }) {
-        if dir.is_empty() {
-            continue;
-        }
-        let mut candidate = PathBuf::from(dir);
-        candidate.push(cmd);
-
-        #[cfg(windows)]
-        {
-            if candidate.is_file() {
-                return true;
-            }
-            for ext in &exts {
-                let mut c2 = candidate.clone();
-                c2.set_extension(ext.trim_start_matches('.'));
-                if c2.is_file() {
-                    return true;
-                }
-            }
-        }
-
-        #[cfg(unix)]
-        {
-            if let Ok(md) = std::fs::metadata(&candidate) {
-                #[allow(clippy::useless_conversion)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if md.is_file() && (md.permissions().mode() & 0o111) != 0 {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-
-    false
 }

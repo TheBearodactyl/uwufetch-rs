@@ -131,6 +131,7 @@ fn render_ascii(content: &str) -> String {
     out
 }
 
+#[allow(clippy::write_literal)]
 pub fn print_info(config: &Configuration, info: &mut SystemInfo) -> io::Result<()> {
     let mut out = BufWriter::new(std::io::stdout());
 
