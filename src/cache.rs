@@ -78,7 +78,8 @@ pub fn read_cache() -> Option<SystemInfo> {
             }
 
             let mut sys = sysinfo::System::new_with_specifics(
-                sysinfo::RefreshKind::new().with_memory(sysinfo::MemoryRefreshKind::everything()),
+                sysinfo::RefreshKind::default()
+                    .with_memory(sysinfo::MemoryRefreshKind::everything()),
             );
             sys.refresh_memory();
             info.ram_total = sys.total_memory() / 1024 / 1024;
@@ -91,4 +92,3 @@ pub fn read_cache() -> Option<SystemInfo> {
 
     None
 }
-

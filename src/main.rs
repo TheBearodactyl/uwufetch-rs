@@ -24,7 +24,7 @@ struct Args {
     #[arg(
         short = 'i',
         long = "image",
-        help = "Print logo as image (requires viu)"
+        help = "Print logo as image (requires sixel)"
     )]
     image: Option<String>,
 
@@ -54,30 +54,44 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
-    let mut user_info = if args.read_cache {
-        if let Some(cached_info) = cache::read_cache() {
-            cached_info
-        } else {
-            info::SystemInfo::new()
-        }
+    let (mut config, distro_override, image_override) = config::Configuration::parse_config();
+    let mut user_info_opt = if args.read_cache {
+        cache::read_cache()
     } else {
-        info::SystemInfo::new()
+        None
     };
 
-    if let Some(distro) = args.distro {
-        user_info.os_name = distro;
-    }
+    let cli_distro = args.distro;
+    let cli_image = args.image;
 
-    let has_image = args.image.is_some();
-    if let Some(image) = args.image {
-        if !image.is_empty() {
-            user_info.image_name = Some(image);
+    let mut user_info = if let Some(mut info) = user_info_opt.take() {
+        if let Some(d) = cli_distro.clone().or_else(|| distro_override.clone()) {
+            info.os_name = d;
         }
-    }
+        if let Some(img) = cli_image.clone().or_else(|| image_override.clone()) {
+            if !img.is_empty() {
+                info.image_name = Some(img);
+                config.show_image = true;
+            }
+        }
+        info
+    } else {
+        let mut info = info::SystemInfo::default();
+        if let Some(d) = cli_distro.clone().or_else(|| distro_override.clone()) {
+            info.os_name = d;
+        }
+        if let Some(img) = cli_image.clone().or_else(|| image_override.clone()) {
+            if !img.is_empty() {
+                info.image_name = Some(img);
+                config.show_image = true;
+            }
+        }
+        info.populate(&config);
+        info
+    };
 
-    let mut config = config::Configuration::parse_config(&mut user_info);
-
-    if has_image {
+    let has_image_cli = cli_image.is_some();
+    if has_image_cli {
         config.show_image = true;
     }
 
@@ -121,4 +135,3 @@ fn list_distributions() {
     println!("    \x1b[0mOther/spare distributions:");
     println!("      \x1b[34malpine, \x1b[38;5;201mfemboyos, gentoo, \x1b[35mslackware, \x1b[37msolus, \x1b[32mvoid, opensuse-leap, android, \x1b[33mgnu, guix, \x1b[34mwindows, \x1b[37munknown\n");
 }
-

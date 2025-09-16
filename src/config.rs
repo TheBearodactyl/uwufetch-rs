@@ -1,4 +1,3 @@
-use crate::info::SystemInfo;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -43,8 +42,12 @@ impl Default for Configuration {
 }
 
 impl Configuration {
-    pub fn parse_config(user_info: &mut SystemInfo) -> Self {
+    // Parse config file without probing the system.
+    // Returns (config, distro_override, image_override)
+    pub fn parse_config() -> (Self, Option<String>, Option<String>) {
         let mut config = Configuration::default();
+        let mut distro_override: Option<String> = None;
+        let mut image_override: Option<String> = None;
 
         let config_path = Self::find_config_file();
         if let Some(path) = config_path {
@@ -62,7 +65,9 @@ impl Configuration {
                         let value = value.trim().trim_matches('"');
 
                         match key {
-                            "distro" => user_info.os_name = value.to_string(),
+                            "distro" => {
+                                distro_override = Some(value.to_string());
+                            }
                             "image" => {
                                 let mut image_path = value.to_string();
                                 if image_path.starts_with('~') {
@@ -70,7 +75,7 @@ impl Configuration {
                                         image_path = image_path.replacen('~', &home, 1);
                                     }
                                 }
-                                user_info.image_name = Some(image_path);
+                                image_override = Some(image_path);
                                 config.show_image = true;
                             }
                             "user" => config.show_user = value == "true",
@@ -97,7 +102,7 @@ impl Configuration {
             }
         }
 
-        config
+        (config, distro_override, image_override)
     }
 
     fn find_config_file() -> Option<PathBuf> {
@@ -123,4 +128,3 @@ impl Configuration {
         None
     }
 }
-
