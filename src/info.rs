@@ -1,27 +1,12 @@
 #![allow(unreachable_code)]
 
 use crate::config::Configuration;
+use std::env;
 use std::fs::{self, read_dir};
 use std::path::Path;
 use std::process::Command;
 use std::thread;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
-
-#[cfg(target_os = "windows")]
-use windows::{
-    core::{PCWSTR, PWSTR},
-    Win32::{
-        System::{
-            Registry::{RegOpenKeyExW, RegQueryValueExW, HKEY_LOCAL_MACHINE, KEY_READ},
-            SystemInformation::{
-                ComputerNamePhysicalDnsHostname, GetSystemInfo, GetTickCount64,
-                GlobalMemoryStatusEx, MEMORYSTATUSEX, SYSTEM_INFO,
-            },
-            WindowsProgramming::{GetComputerNameW, GetUserNameW},
-        },
-        UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN},
-    },
-};
 
 #[derive(Debug, Clone, Default)]
 pub struct SystemInfo {
@@ -230,59 +215,13 @@ impl SystemInfo {
     }
 
     fn get_cpu(&mut self, sys: &System) {
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(content) = fs::read_to_string("/proc/cpuinfo") {
-                let mut brand = String::new();
-                let mut count = 0u32;
+        if let Some(cpu) = sys.cpus().first() {
+            self.cpu_model = cpu.brand().to_string();
 
-                for line in content.lines() {
-                    if line.starts_with("model name") {
-                        if let Some(name) = line.split(':').nth(1) {
-                            brand = name.trim().to_string();
-                        }
-                        count += 1;
-                    }
-                }
-
-                if !brand.is_empty() {
-                    self.cpu_model = brand;
-                } else {
-                    self.cpu_model = format!("{} Cores", count);
-                }
-                return;
+            if self.cpu_model.is_empty() {
+                self.cpu_model = format!("{} Cores", sys.cpus().len());
             }
         }
-
-        #[cfg(target_os = "macos")]
-        {
-            if let Ok(output) = Command::new("sysctl")
-                .arg("machdep.cpu.brand_string")
-                .output()
-            {
-                let brand = String::from_utf8_lossy(&output.stdout);
-                if let Some(brand) = brand.split(':').nth(1) {
-                    self.cpu_model = brand.trim().to_string();
-                    return;
-                }
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            if let Ok(output) = Command::new("wmic").args(["cpu", "get", "name"]).output() {
-                let cpu = String::from_utf8_lossy(&output.stdout);
-                for line in cpu.lines().skip(1) {
-                    let line = line.trim();
-                    if !line.is_empty() && line != "Name" {
-                        self.cpu_model = line.to_string();
-                        return;
-                    }
-                }
-            }
-        }
-
-        self.cpu_model = "Unknowon CPUWU".to_string();
     }
 
     fn get_memory(&mut self, sys: &System) {
@@ -618,4 +557,23 @@ fn detect_packages_fast() -> (u32, String) {
         return (0u32, String::new());
     }
     (total, labels.join(", "))
+}
+
+fn which(cmd: &str) -> bool {
+    if let Ok(paths) = env::var("PATH") {
+        for path in env::split_paths(&paths) {
+            let full_path = path.join(cmd);
+            if full_path.is_file() {
+                return true;
+            }
+            #[cfg(windows)]
+            {
+                let exe_path = full_path.with_extension("exe");
+                if exe_path.is_file() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
