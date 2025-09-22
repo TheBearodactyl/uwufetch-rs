@@ -6,7 +6,6 @@ use std::fs::{self, read_dir};
 use std::path::Path;
 use std::process::Command;
 use std::thread;
-use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
 #[derive(Debug, Clone, Default)]
 pub struct SystemInfo {
@@ -30,14 +29,6 @@ pub struct SystemInfo {
 
 impl SystemInfo {
     pub fn populate(&mut self, config: &Configuration) {
-        let mut sys = System::new_with_specifics(
-            RefreshKind::default()
-                .with_cpu(CpuRefreshKind::everything())
-                .with_memory(MemoryRefreshKind::everything()),
-        );
-        sys.refresh_cpu_all();
-        sys.refresh_memory();
-
         self.get_user_host_fast();
         if self.os_name.is_empty() {
             self.get_os_info();
@@ -45,10 +36,10 @@ impl SystemInfo {
         self.get_kernel_fast();
         self.get_resolution();
         self.get_model();
-        self.get_cpu(&sys);
-        self.get_memory(&sys);
+        self.get_cpu();
+        self.get_memory();
         self.get_shell();
-        self.get_uptime(&sys);
+        self.get_uptime();
 
         let gpu_handle = if config.show_gpu {
             Some(thread::spawn(detect_gpus))
@@ -162,7 +153,42 @@ impl SystemInfo {
 
         #[cfg(windows)]
         {
-            self.kernel = format!("Windows NT {}", std::env::consts::OS);
+            unsafe {
+                use windows::core::HSTRING;
+                use windows::Win32::System::Registry::*;
+
+                let key_path = HSTRING::from("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion");
+                let mut hkey = Default::default();
+
+                if RegOpenKeyExW(HKEY_LOCAL_MACHINE, &key_path, Some(0), KEY_READ, &mut hkey)
+                    .is_ok()
+                {
+                    let build_name = HSTRING::from("CurrentBuildNumber");
+                    let mut build_buffer = [0u8; 256];
+                    let mut build_size = build_buffer.len() as u32;
+
+                    if RegQueryValueExW(
+                        hkey,
+                        &build_name,
+                        None,
+                        None,
+                        Some(build_buffer.as_mut_ptr()),
+                        Some(&mut build_size),
+                    )
+                    .is_ok()
+                    {
+                        if let Ok(build_str) =
+                            std::str::from_utf8(&build_buffer[..build_size as usize - 1])
+                        {
+                            self.kernel =
+                                format!("Windows NT Build {}", build_str.trim_end_matches('\0'));
+                            return;
+                        }
+                    }
+                }
+            }
+
+            self.kernel = "Windows NT".to_string();
         }
     }
 
@@ -198,6 +224,44 @@ impl SystemInfo {
 
         #[cfg(target_os = "windows")]
         {
+            unsafe {
+                use windows::core::HSTRING;
+                use windows::Win32::System::Registry::*;
+
+                let key_path =
+                    HSTRING::from("SYSTEM\\CurrentControlSet\\Control\\SystemInformation");
+                let mut hkey = Default::default();
+
+                if RegOpenKeyExW(HKEY_LOCAL_MACHINE, &key_path, Some(0), KEY_READ, &mut hkey)
+                    .is_ok()
+                {
+                    let model_name = HSTRING::from("SystemProductName");
+                    let mut model_buffer = [0u8; 512];
+                    let mut model_size = model_buffer.len() as u32;
+
+                    if RegQueryValueExW(
+                        hkey,
+                        &model_name,
+                        None,
+                        None,
+                        Some(model_buffer.as_mut_ptr()),
+                        Some(&mut model_size),
+                    )
+                    .is_ok()
+                    {
+                        if let Ok(model_str) =
+                            std::str::from_utf8(&model_buffer[..model_size as usize - 1])
+                        {
+                            let model = model_str.trim_end_matches('\0').trim();
+                            if !model.is_empty() {
+                                self.model = model.to_string();
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+
             if let Ok(output) = Command::new("wmic")
                 .args(["computersystem", "get", "model"])
                 .output()
@@ -212,21 +276,238 @@ impl SystemInfo {
                 }
             }
         }
-    }
 
-    fn get_cpu(&mut self, sys: &System) {
-        if let Some(cpu) = sys.cpus().first() {
-            self.cpu_model = cpu.brand().to_string();
+        #[cfg(target_os = "linux")]
+        {
+            let model_files = [
+                "/sys/devices/virtual/dmi/id/product_version",
+                "/sys/devices/virtual/dmi/id/product_name",
+                "/sys/devices/virtual/dmi/id/board_name",
+            ];
 
-            if self.cpu_model.is_empty() {
-                self.cpu_model = format!("{} Cores", sys.cpus().len());
+            for file in &model_files {
+                if let Ok(content) = fs::read_to_string(file) {
+                    let content = content.trim();
+                    if !content.is_empty() && content != "To Be Filled By O.E.M." {
+                        self.model = content.to_string();
+                        return;
+                    }
+                }
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(output) = Command::new("sysctl").arg("hw.model").output() {
+                let model = String::from_utf8_lossy(&output.stdout);
+                if let Some(model) = model.split(':').nth(1) {
+                    self.model = model.trim().to_string();
+                }
             }
         }
     }
 
-    fn get_memory(&mut self, sys: &System) {
-        self.ram_total = sys.total_memory() / 1024 / 1024;
-        self.ram_used = sys.used_memory() / 1024 / 1024;
+    fn get_cpu(&mut self) {
+        #[cfg(target_os = "windows")]
+        {
+            unsafe {
+                use windows::core::HSTRING;
+                use windows::Win32::System::Registry::*;
+
+                let key_path = HSTRING::from("HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0");
+                let mut hkey = Default::default();
+
+                if RegOpenKeyExW(HKEY_LOCAL_MACHINE, &key_path, Some(0), KEY_READ, &mut hkey)
+                    .is_ok()
+                {
+                    let processor_name = HSTRING::from("ProcessorNameString");
+                    let mut cpu_buffer = [0u8; 512];
+                    let mut cpu_size = cpu_buffer.len() as u32;
+
+                    if RegQueryValueExW(
+                        hkey,
+                        &processor_name,
+                        None,
+                        None,
+                        Some(cpu_buffer.as_mut_ptr()),
+                        Some(&mut cpu_size),
+                    )
+                    .is_ok()
+                    {
+                        if let Ok(cpu_str) =
+                            std::str::from_utf8(&cpu_buffer[..cpu_size as usize - 1])
+                        {
+                            self.cpu_model = cpu_str.trim_end_matches('\0').trim().to_string();
+                            return;
+                        }
+                    }
+                }
+            }
+
+            if let Ok(output) = Command::new("wmic").args(["cpu", "get", "name"]).output() {
+                let cpu = String::from_utf8_lossy(&output.stdout);
+                for line in cpu.lines().skip(1) {
+                    let line = line.trim();
+                    if !line.is_empty() && line != "Name" {
+                        self.cpu_model = line.to_string();
+                        return;
+                    }
+                }
+            }
+
+            self.cpu_model = "Unknown CPU".to_string();
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(content) = fs::read_to_string("/proc/cpuinfo") {
+                let mut brand = String::new();
+                let mut count = 0u32;
+
+                for line in content.lines() {
+                    if line.starts_with("model name") {
+                        if let Some(name) = line.split(':').nth(1) {
+                            brand = name.trim().to_string();
+                        }
+                        count += 1;
+                    }
+                }
+
+                if !brand.is_empty() {
+                    self.cpu_model = brand;
+                } else {
+                    self.cpu_model = format!("{} Cores", count);
+                }
+                return;
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(output) = Command::new("sysctl")
+                .arg("machdep.cpu.brand_string")
+                .output()
+            {
+                let brand = String::from_utf8_lossy(&output.stdout);
+                if let Some(brand) = brand.split(':').nth(1) {
+                    self.cpu_model = brand.trim().to_string();
+                    return;
+                }
+            }
+        }
+
+        self.cpu_model = "Unknown CPU".to_string();
+    }
+
+    fn get_memory(&mut self) {
+        #[cfg(target_os = "windows")]
+        {
+            unsafe {
+                use windows::Win32::System::SystemInformation::{
+                    GlobalMemoryStatusEx, MEMORYSTATUSEX,
+                };
+
+                let mut memstatus = MEMORYSTATUSEX {
+                    dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+                    ..Default::default()
+                };
+
+                if GlobalMemoryStatusEx(&mut memstatus).is_ok() {
+                    self.ram_total = (memstatus.ullTotalPhys / 1024 / 1024) as u64;
+                    self.ram_used =
+                        ((memstatus.ullTotalPhys - memstatus.ullAvailPhys) / 1024 / 1024) as u64;
+                    return;
+                }
+            }
+
+            if let Ok(output) = Command::new("wmic")
+                .args([
+                    "OS",
+                    "get",
+                    "TotalVisibleMemorySize,FreePhysicalMemory",
+                    "/format:csv",
+                ])
+                .output()
+            {
+                let mem = String::from_utf8_lossy(&output.stdout);
+                for line in mem.lines().skip(1) {
+                    if !line.trim().is_empty() {
+                        let parts: Vec<&str> = line.split(',').collect();
+                        if parts.len() >= 3 {
+                            if let Ok(free) = parts[1].parse::<u64>() {
+                                if let Ok(total) = parts[2].parse::<u64>() {
+                                    self.ram_total = total / 1024;
+                                    self.ram_used = (total - free) / 1024;
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(content) = fs::read_to_string("/proc/meminfo") {
+                let mut total = 0u64;
+                let mut available = 0u64;
+
+                for line in content.lines() {
+                    if line.starts_with("MemTotal:") {
+                        if let Some(val) = line.split_whitespace().nth(1) {
+                            total = val.parse().unwrap_or(0);
+                        }
+                    } else if line.starts_with("MemAvailable:") {
+                        if let Some(val) = line.split_whitespace().nth(1) {
+                            available = val.parse().unwrap_or(0);
+                        }
+                    }
+                }
+
+                self.ram_total = total / 1024;
+                self.ram_used = (total - available) / 1024;
+                return;
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(output) = Command::new("sysctl").arg("hw.memsize").output() {
+                let mem = String::from_utf8_lossy(&output.stdout);
+                if let Some(size) = mem.split(':').nth(1) {
+                    if let Ok(bytes) = size.trim().parse::<u64>() {
+                        self.ram_total = bytes / 1024 / 1024;
+                    }
+                }
+            }
+
+            if let Ok(output) = Command::new("vm_stat").output() {
+                let vm_output = String::from_utf8_lossy(&output.stdout);
+                let mut active = 0u64;
+                let mut wired = 0u64;
+                let mut compressed = 0u64;
+
+                for line in vm_output.lines() {
+                    if let Some(val) = line.split_whitespace().last() {
+                        let val = val.trim_end_matches('.');
+                        if let Ok(pages) = val.parse::<u64>() {
+                            if line.contains("Pages active:") {
+                                active = pages;
+                            } else if line.contains("Pages wired down:") {
+                                wired = pages;
+                            } else if line.contains("Pages occupied by compressor:") {
+                                compressed = pages;
+                            }
+                        }
+                    }
+                }
+
+                let page_size = 4096u64;
+                self.ram_used = (active + wired + compressed) * page_size / 1024 / 1024;
+            }
+            return;
+        }
     }
 
     fn get_resolution(&mut self) {
@@ -242,8 +523,41 @@ impl SystemInfo {
         }
     }
 
-    fn get_uptime(&mut self, _sys: &System) {
-        self.uptime = System::uptime();
+    fn get_uptime(&mut self) {
+        #[cfg(target_os = "windows")]
+        {
+            unsafe {
+                use windows::Win32::System::SystemInformation::GetTickCount64;
+
+                let tick_count = GetTickCount64();
+                self.uptime = tick_count / 1000;
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(content) = fs::read_to_string("/proc/uptime") {
+                if let Some(uptime_str) = content.split_whitespace().next() {
+                    if let Ok(uptime_f) = uptime_str.parse::<f64>() {
+                        self.uptime = uptime_f as u64;
+                        return;
+                    }
+                }
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(output) = Command::new("sysctl").arg("kern.boottime").output() {
+                let boottime = String::from_utf8_lossy(&output.stdout);
+                if let Ok(output) = Command::new("uptime").output() {
+                    let uptime_str = String::from_utf8_lossy(&output.stdout);
+                    if uptime_str.contains("days") {
+                        self.uptime = 86400;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -322,7 +636,55 @@ fn detect_gpus() -> Vec<String> {
 
     #[cfg(target_os = "windows")]
     {
-        let mut gpus = Vec::<String>::new();
+        let mut gpus: Vec<String> = Vec::new();
+
+        unsafe {
+            use windows::core::HSTRING;
+            use windows::Win32::System::Registry::*;
+
+            let key_path = HSTRING::from(
+                "SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}",
+            );
+            let mut hkey = HKEY::default();
+
+            if RegOpenKeyExW(HKEY_LOCAL_MACHINE, &key_path, Some(0), KEY_READ, &mut hkey).is_ok() {
+                for i in 0..10 {
+                    let subkey_name = HSTRING::from(format!("{:04}", i));
+                    let mut subkey = HKEY::default();
+
+                    if RegOpenKeyExW(hkey, &subkey_name, Some(0), KEY_READ, &mut subkey).is_ok() {
+                        let desc_name = HSTRING::from("DriverDesc");
+                        let mut desc_buffer = [0u8; 512];
+                        let mut desc_size = desc_buffer.len() as u32;
+
+                        if RegQueryValueExW(
+                            subkey,
+                            &desc_name,
+                            None,
+                            None,
+                            Some(desc_buffer.as_mut_ptr()),
+                            Some(&mut desc_size),
+                        )
+                        .is_ok()
+                        {
+                            if let Ok(desc_str) =
+                                std::str::from_utf8(&desc_buffer[..desc_size as usize - 1])
+                            {
+                                let desc = desc_str.trim_end_matches('\0').trim();
+                                if !desc.is_empty() && !gpus.contains(&desc.to_string()) {
+                                    gpus.push(desc.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !gpus.is_empty() {
+            return gpus;
+        }
+
         if let Ok(output) = Command::new("wmic")
             .args(["path", "win32_VideoController", "get", "name"])
             .output()
@@ -335,10 +697,11 @@ fn detect_gpus() -> Vec<String> {
                 }
             }
         }
+
         return gpus;
     }
 
-    Vec::<String>::new()
+    Vec::new()
 }
 
 fn detect_resolution() -> (u32, u32) {
@@ -559,6 +922,7 @@ fn detect_packages_fast() -> (u32, String) {
     (total, labels.join(", "))
 }
 
+#[cfg(not(target_os = "windows"))]
 fn which(cmd: &str) -> bool {
     if let Ok(paths) = env::var("PATH") {
         for path in env::split_paths(&paths) {

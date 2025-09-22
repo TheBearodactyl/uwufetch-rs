@@ -77,18 +77,169 @@ pub fn read_cache() -> Option<SystemInfo> {
                 }
             }
 
-            let mut sys = sysinfo::System::new_with_specifics(
-                sysinfo::RefreshKind::default()
-                    .with_memory(sysinfo::MemoryRefreshKind::everything()),
-            );
-            sys.refresh_memory();
-            info.ram_total = sys.total_memory() / 1024 / 1024;
-            info.ram_used = sys.used_memory() / 1024 / 1024;
-            info.uptime = sysinfo::System::uptime();
+            info.ram_total = get_mem().0;
+            info.ram_used = get_mem().1;
+            info.uptime = get_uptime();
 
             return Some(info);
         }
     }
 
     None
+}
+
+fn get_uptime() -> u64 {
+    #[cfg(target_os = "windows")]
+    {
+        unsafe {
+            use windows::Win32::System::SystemInformation::GetTickCount64;
+
+            let tick_count = GetTickCount64();
+            tick_count / 1000
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = fs::read_to_string("/proc/uptime") {
+            if let Some(uptime_str) = content.split_whitespace().next() {
+                if let Ok(uptime_f) = uptime_str.parse::<f64>() {
+                    self.uptime = uptime_f as u64;
+                    return;
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+
+        if let Ok(output) = Command::new("sysctl").arg("kern.boottime").output() {
+            let boottime = String::from_utf8_lossy(&output.stdout);
+            if let Ok(output) = Command::new("uptime").output() {
+                let uptime_str = String::from_utf8_lossy(&output.stdout);
+                if uptime_str.contains("days") {
+                    self.uptime = 86400;
+                }
+            }
+        }
+    }
+}
+
+fn get_mem() -> (u64, u64) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+
+        unsafe {
+            use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+            let mut memstatus = MEMORYSTATUSEX {
+                dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+                ..Default::default()
+            };
+
+            if GlobalMemoryStatusEx(&mut memstatus).is_ok() {
+                let ram_total = (memstatus.ullTotalPhys / 1024 / 1024) as u64;
+                let ram_used =
+                    ((memstatus.ullTotalPhys - memstatus.ullAvailPhys) / 1024 / 1024) as u64;
+
+                return (ram_total, ram_used);
+            }
+        }
+
+        if let Ok(output) = Command::new("wmic")
+            .args([
+                "OS",
+                "get",
+                "TotalVisibleMemorySize,FreePhysicalMemory",
+                "/format:csv",
+            ])
+            .output()
+        {
+            let mem = String::from_utf8_lossy(&output.stdout);
+            for line in mem.lines().skip(1) {
+                if !line.trim().is_empty() {
+                    let parts: Vec<&str> = line.split(',').collect();
+                    if parts.len() >= 3 {
+                        if let Ok(free) = parts[1].parse::<u64>() {
+                            if let Ok(total) = parts[2].parse::<u64>() {
+                                let ram_total = total / 1024;
+                                let ram_used = (total - free) / 1024;
+
+                                return (ram_total, ram_used);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        (0, 0)
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = fs::read_to_string("/proc/meminfo") {
+            let mut total = 0u64;
+            let mut available = 0u64;
+
+            for line in content.lines() {
+                if line.starts_with("MemTotal:") {
+                    if let Some(val) = line.split_whitespace().nth(1) {
+                        total = val.parse().unwrap_or(0);
+                    }
+                } else if line.starts_with("MemAvailable:") {
+                    if let Some(val) = line.split_whitespace().nth(1) {
+                        available = val.parse().unwrap_or(0);
+                    }
+                }
+            }
+
+            self.ram_total = total / 1024;
+            self.ram_used = (total - available) / 1024;
+            return;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+
+        if let Ok(output) = Command::new("sysctl").arg("hw.memsize").output() {
+            let mem = String::from_utf8_lossy(&output.stdout);
+            if let Some(size) = mem.split(':').nth(1) {
+                if let Ok(bytes) = size.trim().parse::<u64>() {
+                    self.ram_total = bytes / 1024 / 1024;
+                }
+            }
+        }
+
+        if let Ok(output) = Command::new("vm_stat").output() {
+            let vm_output = String::from_utf8_lossy(&output.stdout);
+            let mut active = 0u64;
+            let mut wired = 0u64;
+            let mut compressed = 0u64;
+
+            for line in vm_output.lines() {
+                if let Some(val) = line.split_whitespace().last() {
+                    let val = val.trim_end_matches('.');
+                    if let Ok(pages) = val.parse::<u64>() {
+                        if line.contains("Pages active:") {
+                            active = pages;
+                        } else if line.contains("Pages wired down:") {
+                            wired = pages;
+                        } else if line.contains("Pages occupied by compressor:") {
+                            compressed = pages;
+                        }
+                    }
+                }
+            }
+
+            let page_size = 4096u64;
+            self.ram_used = (active + wired + compressed) * page_size / 1024 / 1024;
+        }
+        return;
+    }
 }
