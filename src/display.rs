@@ -1,10 +1,9 @@
+use crate::assets::Assets;
 use crate::config::Configuration;
 use crate::info::SystemInfo;
 use crate::uwufy;
 use owo_colors::{AnsiColors, OwoColorize, Rgb, Style};
-use std::fs::{self};
 use std::io::{self, BufWriter, Write};
-use std::path::Path;
 
 const BLOCK_CHAR: &str = "█";
 
@@ -92,9 +91,7 @@ fn render_ascii(content: &str) -> String {
                 }
                 TOK_YELLOW => st.fg = Some(ColorSpec::Ansi(AnsiColors::Yellow)),
                 TOK_BLUE => st.fg = Some(ColorSpec::Ansi(AnsiColors::Blue)),
-                TOK_MAGENTA => {
-                    st.fg = Some(ColorSpec::Ansi(AnsiColors::Magenta))
-                }
+                TOK_MAGENTA => st.fg = Some(ColorSpec::Ansi(AnsiColors::Magenta)),
                 TOK_CYAN => st.fg = Some(ColorSpec::Ansi(AnsiColors::Cyan)),
                 TOK_WHITE => st.fg = Some(ColorSpec::Ansi(AnsiColors::White)),
                 TOK_PINK => {
@@ -133,7 +130,7 @@ fn render_ascii(content: &str) -> String {
 
 #[allow(clippy::write_literal)]
 pub fn print_info(config: &Configuration, info: &mut SystemInfo) -> io::Result<()> {
-    let mut out = BufWriter::new(std::io::stdout());
+    let mut out = BufWriter::new(io::stdout());
 
     uwufy::uwu_name(&mut info.os_name);
 
@@ -186,13 +183,7 @@ pub fn print_info(config: &Configuration, info: &mut SystemInfo) -> io::Result<(
 
     if config.show_gpu {
         for gpu in &info.gpu_models {
-            writeln!(
-                &mut out,
-                "{}{} {}",
-                move_cursor,
-                "GPUWU    ".bold(),
-                gpu
-            )?;
+            writeln!(&mut out, "{}{} {}", move_cursor, "GPUWU    ".bold(), gpu)?;
         }
     }
 
@@ -207,8 +198,7 @@ pub fn print_info(config: &Configuration, info: &mut SystemInfo) -> io::Result<(
         )?;
     }
 
-    if config.show_resolution && (info.screen_width != 0 || info.screen_height != 0)
-    {
+    if config.show_resolution && (info.screen_width != 0 || info.screen_height != 0) {
         writeln!(
             &mut out,
             "{}{} {}x{}",
@@ -264,12 +254,7 @@ pub fn print_info(config: &Configuration, info: &mut SystemInfo) -> io::Result<(
             "██".magenta(),
             "██".cyan()
         )?;
-        writeln!(
-            &mut out,
-            "{}{}",
-            "\x1b[18C",
-            "██".white()
-        )?;
+        writeln!(&mut out, "{}{}", "\x1b[18C", "██".white())?;
     }
 
     out.flush()?;
@@ -290,13 +275,29 @@ fn format_uptime(seconds: u64) -> String {
 }
 
 pub fn print_ascii(info: &SystemInfo) -> io::Result<usize> {
-    let ascii_path = find_ascii_file(&info.os_name);
+    let mut out = BufWriter::new(io::stdout());
+    let ascii_filename = format!("ascii/{}.txt", info.os_name);
 
-    let mut out = BufWriter::new(std::io::stdout());
+    if let Some(file) = Assets::get(&ascii_filename) {
+        let content = std::str::from_utf8(&file.data)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    if let Some(path) = ascii_path {
-        if let Ok(content) = fs::read_to_string(&path) {
-            let processed = render_ascii(&content);
+        let processed = render_ascii(content);
+        writeln!(&mut out)?;
+        out.write_all(processed.as_bytes())?;
+        out.flush()?;
+
+        let line_count = processed.lines().count() + 1;
+
+        return Ok(line_count);
+    }
+
+    if info.os_name != "unknown" {
+        let fallback_filename = "ascii/unknown.txt";
+        if let Some(file) = Assets::get(fallback_filename) {
+            let content = std::str::from_utf8(&file.data)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let processed = render_ascii(content);
             writeln!(&mut out)?;
             out.write_all(processed.as_bytes())?;
             out.flush()?;
@@ -308,67 +309,33 @@ pub fn print_ascii(info: &SystemInfo) -> io::Result<usize> {
 
     writeln!(&mut out, "No\nascii\nfile\nfound\n\n\n")?;
     out.flush()?;
+
     Ok(7)
 }
 
-fn find_ascii_file(os_name: &str) -> Option<String> {
-    let local_path = format!("./res/ascii/{}.txt", os_name);
-    if Path::new(&local_path).exists() {
-        return Some(local_path);
-    }
-
-    #[cfg(target_os = "android")]
-    let system_path = format!(
-        "/data/data/com.termux/files/usr/lib/uwufetch/ascii/{}.txt",
-        os_name
-    );
-
-    #[cfg(target_os = "macos")]
-    let system_path = format!("/usr/local/lib/uwufetch/ascii/{}.txt", os_name);
-
-    #[cfg(not(any(target_os = "android", target_os = "macos")))]
-    let system_path = format!("/usr/lib/uwufetch/ascii/{}.txt", os_name);
-
-    if Path::new(&system_path).exists() {
-        Some(system_path)
-    } else if os_name != "unknown" {
-        find_ascii_file("unknown")
-    } else {
-        None
-    }
-}
-
 pub fn print_image(info: &SystemInfo) -> io::Result<usize> {
-    let image_path = if let Some(ref img) = info.image_name {
-        let local = format!("./res/{}.sixel", img);
-        if Path::new(&local).exists() {
-            local
-        } else {
-            img.clone()
-        }
+    let image_filename = if let Some(ref img) = info.image_name {
+        format!("{}.sixel", img)
     } else {
-        #[cfg(target_os = "android")]
-        let default_path = format!(
-            "/data/data/com.termux/files/usr/lib/uwufetch/{}.sixel",
-            info.os_name
-        );
-
-        #[cfg(target_os = "macos")]
-        let default_path =
-            format!("/usr/local/lib/uwufetch/{}.sixel", info.os_name);
-
-        #[cfg(not(any(target_os = "android", target_os = "macos")))]
-        let default_path = format!("/usr/lib/uwufetch/{}.sixel", info.os_name);
-
-        let local = format!("./res/{}.sixel", info.os_name);
-        if Path::new(&local).exists() {
-            local
-        } else {
-            default_path
-        }
+        format!("{}.sixel", info.os_name)
     };
 
-    let sixelstr = fs::read_to_string(image_path)?;
-    println!("{}", sixelstr);
-    Ok(9)
+    if let Some(file) = Assets::get(&image_filename) {
+        let sixelstr = std::str::from_utf8(&file.data)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        println!("{}", sixelstr);
+        return Ok(9);
+    }
+
+    if info.image_name.is_none() && info.os_name != "unknown" {
+        if let Some(file) = Assets::get("unknown.sixel") {
+            let sixelstr = std::str::from_utf8(&file.data)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            println!("{}", sixelstr);
+            return Ok(9);
+        }
+    }
+
+    println!("No image found");
+    Ok(1)
 }
